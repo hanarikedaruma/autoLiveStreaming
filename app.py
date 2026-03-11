@@ -1,202 +1,87 @@
 import streamlit as st
+import requests
 import socket
-import threading
-import google.generativeai as genai
+import ssl
 import time
-import random
 
-st.set_page_config(page_title="AI Twitch Streamer", layout="wide")
+# --- 1. 設定サイドバー ---
+st.sidebar.title("🛠 Connection Fixer")
+ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
+TW_CHANNEL = st.sidebar.text_input("2. Twitch ID", placeholder="kemarihanari").strip().lower()
+TW_ACCESS_TOKEN = st.sidebar.text_input("3. Access Token", type="password", help="oauth:xxx の形式").strip()
 
-# --------------------------
-# セッション状態
-# --------------------------
+if "conn_status" not in st.session_state:
+    st.session_state.conn_status = "⚪️ 待機中"
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "ai_message" not in st.session_state:
-    st.session_state.ai_message = "AI待機中..."
-
-if "connected" not in st.session_state:
-    st.session_state.connected = False
-
-if "bot_running" not in st.session_state:
-    st.session_state.bot_running = False
-
-
-# --------------------------
-# UI
-# --------------------------
-
-st.title("🎙 AI Twitch Streamer")
-
-col1, col2 = st.columns([2,1])
-
-with col1:
-    st.subheader("💬 Twitch Chat")
-
-    chat_container = st.container(height=400)
-
-    with chat_container:
-        for m in st.session_state.messages[-20:]:
-            st.write(f"**{m['user']}** : {m['text']}")
-
-with col2:
-    st.subheader("🤖 AI Talk")
-
-    st.markdown(
-        f"""
-        ### {st.session_state.ai_message}
-        """
-    )
-
-# --------------------------
-# サイドバー
-# --------------------------
-
-st.sidebar.title("⚙ Setup")
-
-bot_name = st.sidebar.text_input("Bot Username")
-channel = st.sidebar.text_input("Channel")
-token = st.sidebar.text_input("OAuth Token", type="password")
-gemini_key = st.sidebar.text_input("Gemini API Key", type="password")
-
-if st.session_state.connected:
-    st.sidebar.success("🟢 Connected")
-else:
-    st.sidebar.warning("🔴 Disconnected")
-
-
-# --------------------------
-# Gemini設定
-# --------------------------
-
-if gemini_key:
-    genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-
-
-def ai_talk(topic):
-
-    prompt = f"""
-あなたは毒舌なAI配信者です。
-短くコメントしてください。
-
-話題:
-{topic}
-
-出力は「」の中だけ。
-"""
-
+# --- 2. 鉄壁の接続関数 ---
+def get_chat_secure():
     try:
-        r = model.generate_content(prompt)
-        return r.text
-    except:
-        return "「AIの脳が停止中…」"
+        # 1. 接続先を「安全な443番ポート」に変更
+        raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        context = ssl.create_default_context()
+        sock = context.wrap_socket(raw_sock, server_hostname="irc.chat.twitch.tv")
+        
+        st.session_state.conn_status = "🟡 認証中..."
+        sock.connect(("irc.chat.twitch.tv", 443)) # ★ここがポイント
+        
+        # 2. トークン整形
+        token = TW_ACCESS_TOKEN if TW_ACCESS_TOKEN.startswith("oauth:") else f"oauth:{TW_ACCESS_TOKEN}"
+        
+        # 3. 認証コマンド送信
+        sock.send(f"PASS {token}\r\n".encode("utf-8"))
+        sock.send(f"NICK {TW_CHANNEL}\r\n".encode("utf-8"))
+        sock.send(f"JOIN #{TW_CHANNEL}\r\n".encode("utf-8"))
+        sock.send("CAP REQ :twitch.tv/tags twitch.tv/commands\r\n".encode("utf-8"))
+        
+        # 4. 受信待機（3秒間）
+        sock.settimeout(3.0)
+        full_data = ""
+        try:
+            # サーバーからの応答をまとめて受け取る
+            for _ in range(5): 
+                chunk = sock.recv(4096).decode("utf-8")
+                full_data += chunk
+                if "PRIVMSG" in chunk: break
+        except socket.timeout:
+            pass
+        
+        sock.close()
+        
+        # 5. ステータス判定
+        if "Welcome" in full_data or "End of /NAMES list" in full_data:
+            st.session_state.conn_status = "🟢 接続成功"
+        else:
+            st.session_state.conn_status = "🔴 認証失敗（Tokenを確認）"
+            return None
 
-
-# --------------------------
-# Twitch BOT
-# --------------------------
-
-def twitch_bot():
-
-    try:
-
-        sock = socket.socket()
-        sock.connect(("irc.chat.twitch.tv", 6667))
-
-        # oauth自動付与
-        t = token.strip()
-        if not t.startswith("oauth:"):
-            t = "oauth:" + t
-
-        sock.send(f"PASS {t}\r\n".encode())
-        sock.send(f"NICK {bot_name}\r\n".encode())
-        sock.send(f"JOIN #{channel}\r\n".encode())
-
-        st.session_state.connected = True
-
-        while True:
-
-            resp = sock.recv(2048).decode("utf-8")
-
-            if resp.startswith("PING"):
-                sock.send("PONG :tmi.twitch.tv\r\n".encode())
-
-            if "PRIVMSG" in resp:
-
-                user = resp.split("!")[0][1:]
-                msg = resp.split("PRIVMSG")[1].split(":",1)[1]
-
-                st.session_state.messages.append({
-                    "user": user,
-                    "text": msg
-                })
-
-                ai = ai_talk(msg)
-
-                st.session_state.ai_message = ai
+        # コメント抽出
+        for line in full_data.split("\r\n"):
+            if "PRIVMSG" in line:
+                user = line.split("!")[0][1:]
+                msg = line.split(f"#{TW_CHANNEL} :", 1)[1].strip()
+                return {"user": user, "text": msg}
+        return None
 
     except Exception as e:
+        st.session_state.conn_status = f"❌ 物理エラー: {str(e)[:20]}"
+        return None
 
-        st.session_state.connected = False
-        print("ERROR:", e)
+# --- 3. メイン UI ---
+st.title("🤖 次世代AI配信：安定接続モード")
 
+st.metric("接続ステータス", st.session_state.conn_status)
 
-# --------------------------
-# 雑談AI
-# --------------------------
+if st.button("🎙 配信トーク実行（コメント取得）", type="primary"):
+    with st.spinner("Twitchサーバーと同期中..."):
+        chat = get_chat_secure()
+        
+        # AI生成ロジック (Gemini)
+        if chat:
+            st.success(f"✅ {chat['user']}さんの声を拾いました")
+            prompt = f"皮肉屋AIとして『{chat['text']}』を受け止め、毒を吐きながら話題を広げて。「」内のみ。"
+        else:
+            st.warning("⚠️ 新しいコメントはありません")
+            prompt = "チャットが静かなことを皮肉って、自発的に150文字程度で毒舌トークを展開して。「」内のみ。"
 
-def idle_ai():
-
-    topics = [
-        "ゲーム実況",
-        "猫",
-        "インターネット文化",
-        "深夜テンション",
-        "人間社会",
-        "AIの未来"
-    ]
-
-    while True:
-
-        time.sleep(60)
-
-        if len(st.session_state.messages) == 0:
-
-            topic = random.choice(topics)
-
-            st.session_state.ai_message = ai_talk(topic)
-
-
-# --------------------------
-# 起動
-# --------------------------
-
-if st.sidebar.button("🚀 Start AI Streamer"):
-
-    if not st.session_state.bot_running:
-
-        st.session_state.bot_running = True
-
-        threading.Thread(target=twitch_bot, daemon=True).start()
-        threading.Thread(target=idle_ai, daemon=True).start()
-
-        st.sidebar.success("AI Bot Started")
-
-
-# --------------------------
-# 自動更新
-# --------------------------
-
-st.components.v1.html(
-"""
-<script>
-setTimeout(function(){
-window.location.reload();
-},4000);
-</script>
-""",
-height=0
-)
+        # Gemini呼び出し（URL、Payloadは前回同様）
+        # ... 生成された talk を再生 ...
