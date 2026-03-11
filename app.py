@@ -5,17 +5,17 @@ import socket
 import time
 
 # --- 1. 設定サイドバー ---
-st.sidebar.title("🔍 Twitch Live Connector")
+st.sidebar.title("🔐 Twitch Connection")
 ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
 TW_CHANNEL = st.sidebar.text_input("2. Twitch ID", placeholder="your_id").strip().lower()
 TW_ACCESS_TOKEN = st.sidebar.text_input("3. Access Token", type="password").strip()
 
 if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
     
-    def listen_to_twitch():
+    def fetch_chat():
         try:
             sock = socket.socket()
-            sock.settimeout(10.0) # ★10秒間、コメントを待ち続ける設定
+            sock.settimeout(10.0)
             sock.connect(("irc.chat.twitch.tv", 6667))
             
             token = TW_ACCESS_TOKEN if TW_ACCESS_TOKEN.startswith("oauth:") else f"oauth:{TW_ACCESS_TOKEN}"
@@ -23,29 +23,38 @@ if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
             sock.send(f"NICK {TW_CHANNEL}\r\n".encode("utf-8"))
             sock.send(f"JOIN #{TW_CHANNEL}\r\n".encode("utf-8"))
             
-            start_time = time.time()
-            st.toast("Twitchに接続しました。コメントを待っています...")
-            
+            # ログイン処理が完了するまで（End of MOTD = 376が出るまで）ループ
             while True:
-                # 10秒経過したらタイムアウト
-                if time.time() - start_time > 10:
+                initial_data = sock.recv(2048).decode("utf-8")
+                if "376" in initial_data or "End of /NAMES list" in initial_data:
                     break
+            
+            # ここからが本当のチャット待機
+            st.toast("ログイン完了。今すぐTwitchで発言してください！")
+            
+            start_wait = time.time()
+            while time.time() - start_wait < 10: # 10秒間粘る
+                try:
+                    data = sock.recv(2048).decode("utf-8")
+                    if "PING" in data:
+                        sock.send("PONG :tmi.twitch.tv\r\n".encode("utf-8"))
                     
-                data = sock.recv(2048).decode("utf-8")
-                
-                # サーバーからの生存確認(PING)に答える（これをしないと切断されます）
-                if data.startswith("PING"):
-                    sock.send("PONG :tmi.twitch.tv\r\n".encode("utf-8"))
-                
-                # コメント(PRIVMSG)を見つけたら即座に返す
-                if "PRIVMSG" in data:
-                    msg = data.split(f"#{TW_CHANNEL} :", 1)[-1].strip()
-                    sock.close()
-                    return msg
+                    if "PRIVMSG" in data:
+                        # メッセージ部分だけを抽出
+                        msg = data.split(" :", 1)[1].strip() if " :" in data else data
+                        # もし「#」が含まれるIRC形式ならさらに絞り込む
+                        if f"#{TW_CHANNEL} :" in data:
+                            msg = data.split(f"#{TW_CHANNEL} :", 1)[1].strip()
+                        
+                        sock.close()
+                        return msg
+                except socket.timeout:
+                    continue
             
             sock.close()
             return None
         except Exception as e:
+            st.error(f"エラー: {e}")
             return None
 
     def call_gemini_api(prompt):
@@ -54,25 +63,25 @@ if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
         try:
             res = requests.post(url, json=payload, timeout=10)
             return res.json()['candidates'][0]['content']['parts'][0]['text']
-        except: return "（AIが考え込んでいます）"
+        except: return "AIが反応できませんでした。"
 
     # --- UI ---
-    st.title("🤖 リアルタイム反応：AI配信者")
-    st.info("下のボタンを押してから10秒以内に、Twitchでコメントを打ってみてください！")
+    st.title("🎙 執念のTwitch反応モード")
+    st.info("ボタンを押して『ログイン完了』と出たら、すぐにTwitchでコメントしてください。")
     
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    if st.button("🎙 チャット受信を開始（10秒間待機）"):
-        with st.spinner("コメント待機中... Twitchで何か打ってください！"):
-            comment = listen_to_twitch()
+    if st.button("🎙 チャットを待ち伏せする"):
+        with st.spinner("Twitchサーバーに潜入中..."):
+            comment = fetch_chat()
             
             if comment:
-                st.success(f"✅ 受信: {comment}")
-                prompt = f"皮肉屋なAIとして、視聴者のコメント「{comment}」に鋭く一言答えて。短く！"
+                st.success(f"✅ 捕まえたコメント: {comment}")
+                prompt = f"皮肉屋なAIとして、視聴者のコメント「{comment}」に短く鋭い皮肉を「」内で一言。"
             else:
-                st.warning("⚠️ 時間切れです。誰も話してくれませんでした。")
-                prompt = "誰も話しかけてくれないので、人間の愛想のなさを皮肉る一言を「」内で言って。"
+                st.warning("⚠️ 誰もいませんでした...")
+                prompt = "誰もいない静かなチャットルームで、人間の気まぐれさを皮肉る一言を「」内で言って。"
 
             speech = call_gemini_api(prompt)
             st.session_state.chat_history.append(speech)
