@@ -1,31 +1,46 @@
 import streamlit as st
 import requests
 import json
+import socket # チャットサーバーに直接繋ぐためのライブラリ
 from supabase import create_client, Client
 
 # --- 1. 設定サイドバー ---
-st.sidebar.title("🔐 Twitch & AI Settings")
+st.sidebar.title("🔐 Twitch 強制接続モード")
 ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
-TW_CHANNEL = st.sidebar.text_input("2. Twitch Channel ID", placeholder="your_id").strip().lower()
+TW_CHANNEL = st.sidebar.text_input("2. Twitch ID (小文字)", placeholder="your_id").strip().lower()
 TW_ACCESS_TOKEN = st.sidebar.text_input("3. Access Token", type="password").strip()
-TW_CLIENT_ID = st.sidebar.text_input("4. Client ID").strip()
-ST_SUPABASE_URL = st.sidebar.text_input("5. Supabase URL").strip()
-ST_SUPABASE_KEY = st.sidebar.text_input("6. Supabase Anon Key", type="password").strip()
+ST_SUPABASE_URL = st.sidebar.text_input("4. Supabase URL").strip()
+ST_SUPABASE_KEY = st.sidebar.text_input("5. Supabase Anon Key", type="password").strip()
 
-if all([ST_GEMINI_KEY, TW_CHANNEL, TW_ACCESS_TOKEN, TW_CLIENT_ID, ST_SUPABASE_URL, ST_SUPABASE_KEY]):
+if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
     
-    def get_twitch_chat_helix():
+    # 【IRC方式：配信中じゃなくてもコメントを引っこ抜く関数】
+    def get_twitch_chat_irc():
         try:
-            headers = {"Client-ID": TW_CLIENT_ID, "Authorization": f"Bearer {TW_ACCESS_TOKEN}"}
-            # ユーザーID取得
-            user_res = requests.get(f"https://api.twitch.tv/helix/users?login={TW_CHANNEL}", headers=headers, timeout=5).json()
-            broadcaster_id = user_res['data'][0]['id']
-            # 最新メッセージ取得
-            chat_res = requests.get(f"https://api.twitch.tv/helix/chat/messages?broadcaster_id={broadcaster_id}", headers=headers, timeout=5).json()
+            sock = socket.socket()
+            sock.settimeout(2.0)
+            sock.connect(("irc.chat.twitch.tv", 6667))
             
-            messages = [m['text'] for m in chat_res.get('data', [])]
+            # 認証（Access Tokenの頭に oauth: を自動で付けます）
+            token = TW_ACCESS_TOKEN if TW_ACCESS_TOKEN.startswith("oauth:") else f"oauth:{TW_ACCESS_TOKEN}"
+            sock.send(f"PASS {token}\r\n".encode("utf-8"))
+            sock.send(f"NICK {TW_CHANNEL}\r\n".encode("utf-8"))
+            sock.send(f"JOIN #{TW_CHANNEL}\r\n".encode("utf-8"))
+            
+            # データを一気に読み込む
+            data = sock.recv(2048).decode("utf-8")
+            sock.close()
+            
+            messages = []
+            for line in data.split("\r\n"):
+                if "PRIVMSG" in line:
+                    # メッセージ本体を抽出
+                    msg = line.split(f"#{TW_CHANNEL} :", 1)[-1]
+                    messages.append(msg)
+            
             return messages if messages else None
-        except:
+        except Exception as e:
+            st.sidebar.error(f"接続失敗: {e}")
             return None
 
     def call_gemini_api(prompt):
@@ -37,22 +52,22 @@ if all([ST_GEMINI_KEY, TW_CHANNEL, TW_ACCESS_TOKEN, TW_CLIENT_ID, ST_SUPABASE_UR
         except: return None
 
     # --- UI ---
-    st.title("🎙 実況中：AI配信者システム")
+    st.title("🎙 AI配信者：チャット強制取得モード")
     
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    if st.button("🎙 最新の空気を読んで発言"):
-        with st.spinner("Twitchを覗き見中..."):
-            comments = get_twitch_chat_helix()
+    if st.button("🎙 チャットを読み取って発言"):
+        with st.spinner("Twitchサーバーに潜入中..."):
+            comments = get_twitch_chat_irc()
             
             if comments:
-                comment_text = " | ".join(comments[-3:])
-                st.success(f"拾ったコメント: {comment_text}")
-                prompt = f"皮肉屋なAIとして、視聴者のコメント「{comment_text}」に鋭いツッコミを一言「」内で言って。"
+                comment_text = " / ".join(comments[-3:])
+                st.success(f"取得成功: {comment_text}")
+                prompt = f"皮肉屋なAIとして、視聴者のコメント「{comment_text}」に鋭いツッコミを「」内で一言。短く！"
             else:
-                st.warning("チャットが空っぽです。")
-                prompt = "チャットに誰もいなくて暇をしている皮肉屋なAIとして、人間の気まぐれさについて一言「」内でぼやいて。"
+                st.warning("やはりチャットが見つかりません。")
+                prompt = "チャットが静まり返っていることに呆れている皮肉屋なAIとして、一言「」内でぼやいて。"
 
             speech = call_gemini_api(prompt)
             
@@ -69,5 +84,3 @@ if all([ST_GEMINI_KEY, TW_CHANNEL, TW_ACCESS_TOKEN, TW_CLIENT_ID, ST_SUPABASE_UR
 
     for m in reversed(st.session_state.chat_history):
         st.chat_message("assistant", avatar="🤖").write(m)
-else:
-    st.info("サイドバーに情報を入力してください。")
