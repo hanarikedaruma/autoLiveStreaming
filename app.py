@@ -1,8 +1,8 @@
 import streamlit as st
-import google.generativeai as genai
+import requests
+import json
 from supabase import create_client, Client
 import random
-import json
 
 # --- 1. 設定サイドバー ---
 st.sidebar.title("🛠 API Settings")
@@ -11,34 +11,45 @@ ST_SUPABASE_URL = st.sidebar.text_input("Supabase URL")
 ST_SUPABASE_KEY = st.sidebar.text_input("Supabase Anon Key", type="password")
 
 if ST_GEMINI_KEY and ST_SUPABASE_URL and ST_SUPABASE_KEY:
-    try:
-        genai.configure(api_key=ST_GEMINI_KEY)
-        supabase: Client = create_client(ST_SUPABASE_URL, ST_SUPABASE_KEY)
-    except Exception as e:
-        st.error(f"初期化エラー: {e}")
+    supabase: Client = create_client(ST_SUPABASE_URL, ST_SUPABASE_KEY)
+
+    # 【APIを直接叩く関数】
+    def call_gemini_api(prompt):
+        # SDKを使わず、直接URLを指定して404を回避
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={ST_GEMINI_KEY}"
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            st.error(f"APIエラー: {response.status_code} - {response.text}")
+            return None
 
     # 話題作成
     def process_topic_generation(comments, random_seed):
-        # 404回避の最終手段：バージョン番号(002)を直接指定
-        model_name = 'gemini-1.5-flash-002'
+        prompt = f"コメント:{comments}、要素:{random_seed}から配信の話題を1つ作り、以下の形式で返せ。{{'topic': '内容', 'tags': '単語'}}"
+        
+        res_text = call_gemini_api(prompt)
+        if not res_text: return None
         
         try:
-            model = genai.GenerativeModel(model_name)
-            prompt = f"コメント:{comments}、要素:{random_seed}から配信の話題を1つ作り、JSONで返せ。{{'topic': '内容', 'tags': '単語'}}"
+            # JSON部分を抽出
+            clean_text = res_text.replace("```json", "").replace("```", "").strip()
+            topic_data = json.loads(clean_text)
             
-            response = model.generate_content(prompt)
-            if not response.text: return None
+            # ベクトル化（EmbeddingもAPI直叩き）
+            embed_url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={ST_GEMINI_KEY}"
+            embed_payload = {"content": {"parts": [{"text": topic_data['topic']}]}}
+            embed_res = requests.post(embed_url, headers={'Content-Type': 'application/json'}, json=embed_payload)
+            embed = embed_res.json()['embedding']['values']
 
-            text = response.text.replace("```json", "").replace("```", "").strip()
-            topic_data = json.loads(text)
-            
-            # Embedding（ここも 404 が出る場合は text-embedding-004 に変更済み）
-            embed_resp = genai.embed_content(
-                model="models/text-embedding-004", 
-                content=topic_data['topic']
-            )
-            embed = embed_resp['embedding']
-
+            # Supabase判定
             res = supabase.rpc('match_topics', {
                 'query_embedding': embed,
                 'match_threshold': 0.8,
@@ -50,42 +61,34 @@ if ST_GEMINI_KEY and ST_SUPABASE_URL and ST_SUPABASE_KEY:
             supabase.table("topics").insert({"content": topic_data['topic'], "embedding": embed}).execute()
             return topic_data
         except Exception as e:
-            st.error(f"話題生成エラー詳細: {str(e)}")
+            st.error(f"解析エラー: {e}")
             return None
 
-    # 配信者回答生成
-    def generate_streaming_speech(topic_text):
-        try:
-            # こちらもバージョン固定
-            model = genai.GenerativeModel('gemini-1.5-flash-002')
-            char_prompt = f"あなたは皮肉屋なAI配信者。話題: {topic_text} に対する一言を「」内に書いて。"
-            response = model.generate_content(char_prompt)
-            return response.text
-        except Exception as e:
-            return f"（エラー... {str(e)[:30]}）"
-
-    # --- UI ---
-    st.title("🤖 自律型AI配信システム")
+    # --- 配信 UI ---
+    st.title("🤖 自律型AI配信者 (REST版)")
+    
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    if st.button("🎙 新しい話題で配信！"):
-        seeds = ["AIの進化", "無駄の美学", "未来の食卓"]
+    if st.button("🎙 次の話題で配信！"):
+        seeds = ["2026年のトレンド", "AIの逆説", "朝食の重要性"]
         topic = process_topic_generation("テスト", random.choice(seeds))
         
         if topic:
             st.success(f"話題: {topic['topic']}")
-            speech = generate_streaming_speech(topic['topic'])
-            st.session_state.chat_history.append(speech)
+            speech_prompt = f"あなたは皮肉屋なAI配信者。話題: {topic['topic']} に対するセリフを「」内に書いて。"
+            speech = call_gemini_api(speech_prompt)
             
-            clean_speech = speech.split("「")[-1].split("」")[0]
-            st.components.v1.html(f"""
-                <script>
-                var msg = new SpeechSynthesisUtterance("{clean_speech}");
-                msg.lang = "ja-JP";
-                window.speechSynthesis.speak(msg);
-                </script>
-            """, height=0)
+            if speech:
+                st.session_state.chat_history.append(speech)
+                clean_speech = speech.split("「")[-1].split("」")[0]
+                st.components.v1.html(f"""
+                    <script>
+                    var msg = new SpeechSynthesisUtterance("{clean_speech}");
+                    msg.lang = "ja-JP";
+                    window.speechSynthesis.speak(msg);
+                    </script>
+                """, height=0)
 
     for m in reversed(st.session_state.chat_history):
         st.chat_message("assistant").write(m)
