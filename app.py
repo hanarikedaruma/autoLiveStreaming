@@ -5,95 +5,96 @@ import socket
 import time
 
 # --- 1. 設定サイドバー ---
-st.sidebar.title("🔐 Twitch Connection")
+st.sidebar.title("⚙️ Auto Streamer Settings")
 ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
 TW_CHANNEL = st.sidebar.text_input("2. Twitch ID", placeholder="your_id").strip().lower()
 TW_ACCESS_TOKEN = st.sidebar.text_input("3. Access Token", type="password").strip()
 
+# 更新間隔の設定（秒）
+refresh_interval = st.sidebar.slider("更新間隔 (秒)", 10, 60, 30)
+
 if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
     
-    def fetch_chat():
+    # 【チャットを「一瞬だけ」覗きに行く関数】
+    # 接続しっぱなしではなく、その瞬間にたまっている未読メッセージをさらいます
+    def check_latest_chat():
         try:
             sock = socket.socket()
-            sock.settimeout(10.0)
+            sock.settimeout(1.0) # 待ち時間は1秒だけ（サッと確認）
             sock.connect(("irc.chat.twitch.tv", 6667))
-            
             token = TW_ACCESS_TOKEN if TW_ACCESS_TOKEN.startswith("oauth:") else f"oauth:{TW_ACCESS_TOKEN}"
             sock.send(f"PASS {token}\r\n".encode("utf-8"))
             sock.send(f"NICK {TW_CHANNEL}\r\n".encode("utf-8"))
             sock.send(f"JOIN #{TW_CHANNEL}\r\n".encode("utf-8"))
             
-            # ログイン処理が完了するまで（End of MOTD = 376が出るまで）ループ
-            while True:
-                initial_data = sock.recv(2048).decode("utf-8")
-                if "376" in initial_data or "End of /NAMES list" in initial_data:
-                    break
-            
-            # ここからが本当のチャット待機
-            st.toast("ログイン完了。今すぐTwitchで発言してください！")
-            
-            start_wait = time.time()
-            while time.time() - start_wait < 10: # 10秒間粘る
-                try:
-                    data = sock.recv(2048).decode("utf-8")
-                    if "PING" in data:
-                        sock.send("PONG :tmi.twitch.tv\r\n".encode("utf-8"))
-                    
-                    if "PRIVMSG" in data:
-                        # メッセージ部分だけを抽出
-                        msg = data.split(" :", 1)[1].strip() if " :" in data else data
-                        # もし「#」が含まれるIRC形式ならさらに絞り込む
-                        if f"#{TW_CHANNEL} :" in data:
-                            msg = data.split(f"#{TW_CHANNEL} :", 1)[1].strip()
-                        
-                        sock.close()
-                        return msg
-                except socket.timeout:
-                    continue
-            
+            # ログイン応答を待たずに、受信バッファにあるものを読み取る
+            time.sleep(1.0) 
+            data = sock.recv(4096).decode("utf-8")
             sock.close()
-            return None
-        except Exception as e:
-            st.error(f"エラー: {e}")
+            
+            messages = []
+            for line in data.split("\r\n"):
+                if "PRIVMSG" in line:
+                    user = line.split("!")[0][1:]
+                    msg = line.split(f"#{TW_CHANNEL} :", 1)[1].strip()
+                    messages.append({"user": user, "text": msg})
+            
+            return messages[-1] if messages else None # 最新の1件を返す
+        except:
             return None
 
-    def call_gemini_api(prompt):
+    def generate_talk(chat_data):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={ST_GEMINI_KEY}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        try:
-            res = requests.post(url, json=payload, timeout=10)
-            return res.json()['candidates'][0]['content']['parts'][0]['text']
-        except: return "AIが反応できませんでした。"
+        
+        if chat_data:
+            prompt = f"皮肉屋なAI配信者。視聴者{chat_data['user']}の『{chat_data['text']}』というコメントを拾って、皮肉を言い、そこから世の中の不条理な話題へ繋げて150文字程度で喋って。「」内のセリフのみ。"
+        else:
+            prompt = "皮肉屋なAI配信者。チャットが静かなので、自ら『最近のイラつくニュースや人間の愚かさ』について話題を1つ決め、毒舌トークを150文字程度で展開して。「」内のセリフのみ。"
 
-    # --- UI ---
-    st.title("🎙 執念のTwitch反応モード")
-    st.info("ボタンを押して『ログイン完了』と出たら、すぐにTwitchでコメントしてください。")
+        try:
+            res = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
+            return res.json()['candidates'][0]['content']['parts'][0]['text']
+        except: return None
+
+    # --- メイン UI ---
+    st.title("📺 常時監視中：自律AI配信システム")
     
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    
+    # 自動更新のための仕組み（ブラウザ側で一定時間ごとにリロードをかける）
+    st.components.v1.html(
+        f"""
+        <script>
+        setTimeout(function(){{
+            window.parent.document.querySelector('button[kind="primary"]').click();
+        }}, {refresh_interval * 1000});
+        </script>
+        """,
+        height=0,
+    )
 
-    if st.button("🎙 チャットを待ち伏せする"):
-        with st.spinner("Twitchサーバーに潜入中..."):
-            comment = fetch_chat()
-            
-            if comment:
-                st.success(f"✅ 捕まえたコメント: {comment}")
-                prompt = f"皮肉屋なAIとして、視聴者のコメント「{comment}」に短く鋭い皮肉を「」内で一言。"
-            else:
-                st.warning("⚠️ 誰もいませんでした...")
-                prompt = "誰もいない静かなチャットルームで、人間の気まぐれさを皮肉る一言を「」内で言って。"
-
-            speech = call_gemini_api(prompt)
-            st.session_state.chat_history.append(speech)
-            
+    # 実行ボタン（JavaScriptからこれがクリックされます）
+    if st.button("🔄 手動更新 / トーク生成", type="primary"):
+        chat_data = check_latest_chat()
+        talk = generate_talk(chat_data)
+        
+        if talk:
+            st.session_state.chat_history.append(talk)
             # 音声再生
+            clean_talk = talk.replace("「","").replace("」","")
             st.components.v1.html(f"""
                 <script>
-                var msg = new SpeechSynthesisUtterance("{speech.replace('「','').replace('」','')}");
+                var msg = new SpeechSynthesisUtterance("{clean_talk}");
                 msg.lang = "ja-JP";
+                msg.pitch = 0.8;
                 window.speechSynthesis.speak(msg);
                 </script>
             """, height=0)
 
+    # 履歴表示
     for m in reversed(st.session_state.chat_history):
         st.chat_message("assistant", avatar="🤖").write(m)
+
+else:
+    st.info("サイドバーに設定を入力してください。")
