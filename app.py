@@ -21,9 +21,10 @@ if ST_GEMINI_KEY and ST_SUPABASE_URL and ST_SUPABASE_KEY:
             res = requests.get(url).json()
             models = [m['name'].split('/')[-1] for m in res.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
             # 優先順位: 1.5-flash -> 2.0-flash -> その他
-            for priority in ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']:
-                if priority in models: return priority
-            return models[0] if models else "gemini-1.5-flash"
+            # 2.0を飛ばして、1.5-flash を最優先にする
+for priority in ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash']:
+	if priority in models: return priority
+		return models[0] if models else "gemini-1.5-flash"
         except:
             return "gemini-1.5-flash"
 
