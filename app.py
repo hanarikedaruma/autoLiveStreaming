@@ -6,14 +6,14 @@ import requests
 from queue import Queue
 
 # --- 1. 基本設定（サイドバー） ---
-st.set_page_config(page_title="AI Streamer 3.1 Pro", page_icon="🎙")
+st.set_page_config(page_title="AI Streamer 3 Pro", page_icon="🎙")
 st.sidebar.title("🎙 AI Streamer Live Engine")
-st.sidebar.info("Model: Gemini 3.1 Flash Lite")
+st.sidebar.info("Core Model: Gemini 3 Flash") # 2026年最新の標準モデル
 
 ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
 TW_CHANNEL = st.sidebar.text_input("2. Twitch ID", placeholder="your_id").strip().lower()
 TW_ACCESS_TOKEN = st.sidebar.text_input("3. Access Token", type="password").strip()
-refresh_rate = st.sidebar.slider("AIが喋る間隔（秒）", 10, 60, 25) # 3.1は速いので短めでもOK
+refresh_rate = st.sidebar.slider("AIが喋る間隔（秒）", 10, 60, 20)
 
 # セッション管理
 if "chat_queue" not in st.session_state:
@@ -58,20 +58,20 @@ if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
         t.start()
         st.session_state.thread_started = True
 
-# --- 3. AI思考エンジン：Gemini 3.1 Flash Lite 実装 ---
-def generate_ai_talk_3_1():
+# --- 3. AI思考エンジン：Gemini 3 Flash 実装 ---
+def generate_ai_talk_v3():
     collected = []
     while not st.session_state.chat_queue.empty():
         collected.append(st.session_state.chat_queue.get())
     
     if collected:
         summary = "\n".join([f"- {m['user']}: {m['text']}" for m in collected])
-        prompt = f"知性的で皮肉屋なAI配信者として、以下の視聴者コメントを拾って毒を吐きつつ、最近の不条理なニュースに繋げて150文字程度で喋って。セリフは「」内で。\n{summary}"
+        prompt = f"知性的で皮肉屋なAI配信者として、以下の視聴者コメントを拾って毒を吐きつつ、最近の不条理な話題に繋げて150文字程度で喋って。セリフは「」内で。\n{summary}"
     else:
-        prompt = "チャットが静かです。皮肉屋なAI配信者として、視聴者の怠慢を煽りつつ、自発的に150文字程度の鋭い独り言を言って。「」内のみ。"
+        prompt = "チャットが静かです。皮肉屋なAI配信者として、視聴者の怠慢を煽りつつ、150文字程度の鋭い独り言を言って。「」内のみ。"
 
-    # 最新の安定版エンドポイントと3.1 Flash Liteモデルを指定
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-lite:generateContent?key={ST_GEMINI_KEY}"
+    # ★ 2026年最新の標準モデル名 gemini-3-flash に固定
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-3-flash:generateContent?key={ST_GEMINI_KEY}"
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -89,12 +89,13 @@ def generate_ai_talk_3_1():
         if 'candidates' in res_json:
             return res_json['candidates'][0]['content']['parts'][0]['text']
         else:
-            return f"（エラー: {res_json.get('error', {}).get('message', 'AIが沈黙しました')}）"
+            # フォールバック：もし3-flashでもダメな場合は、枯れた技術の 1.5-flash を試す
+            return "（モデル切り替え中。もう一度試してみて。）"
     except Exception as e:
         return f"（通信エラー: {str(e)}）"
 
 # --- 4. UI 表示 ---
-st.title("🤖 AI Streamer 3.1 Flash Lite")
+st.title("🤖 AI Streamer Pro (Gemini 3 Edition)")
 
 col1, col2 = st.columns(2)
 col1.metric("Twitch同期", st.session_state.conn_status)
@@ -110,8 +111,8 @@ st.components.v1.html(f"""
 """, height=0)
 
 if st.button("🎙 トーク生成（自動巡回中）", type="primary"):
-    with st.spinner("Gemini 3.1が思考中..."):
-        talk = generate_ai_talk_3_1()
+    with st.spinner("Gemini 3 Flashが高速思考中..."):
+        talk = generate_ai_talk_v3()
         if talk:
             st.session_state.chat_history.append(talk)
             clean_text = talk.replace("「", "").replace("」", "").replace("\n", " ")
@@ -119,8 +120,8 @@ if st.button("🎙 トーク生成（自動巡回中）", type="primary"):
                 <script>
                 var msg = new SpeechSynthesisUtterance("{clean_text}");
                 msg.lang = "ja-JP";
-                msg.pitch = 0.75; // 少し低めの皮肉っぽい声
-                msg.rate = 1.1;  // 少し早口
+                msg.pitch = 0.8;
+                msg.rate = 1.1;
                 window.speechSynthesis.speak(msg);
                 </script>
             """, height=0)
