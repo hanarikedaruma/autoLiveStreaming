@@ -6,8 +6,9 @@ import requests
 from queue import Queue
 
 # --- 1. 基本設定（サイドバー） ---
-st.set_page_config(page_title="AI Streamer v3.1", page_icon="🎙")
-st.sidebar.title("🎙 AI Streamer Live Engine")
+st.set_page_config(page_title="AI Streamer 2.5", page_icon="🎙")
+st.sidebar.title("🎙 AI Streamer Engine")
+st.sidebar.info("Model: Gemini 2.5 Flash (Stable)")
 
 ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
 TW_CHANNEL = st.sidebar.text_input("2. Twitch ID", placeholder="your_id").strip().lower()
@@ -29,12 +30,15 @@ def twitch_listener(channel, token, queue):
             sock = socket.socket()
             sock.settimeout(10.0)
             sock.connect(("irc.chat.twitch.tv", 6667))
+            
             auth_token = token if token.startswith("oauth:") else f"oauth:{token}"
             sock.send(f"PASS {auth_token}\r\n".encode("utf-8"))
             sock.send(f"NICK {channel}\r\n".encode("utf-8"))
             sock.send(f"JOIN #{channel}\r\n".encode("utf-8"))
             sock.send("CAP REQ :twitch.tv/tags twitch.tv/commands\r\n".encode("utf-8"))
+            
             st.session_state.conn_status = "🟢 常時同期中"
+            
             while True:
                 data = sock.recv(2048).decode("utf-8")
                 if not data: break
@@ -54,68 +58,69 @@ if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
         t.start()
         st.session_state.thread_started = True
 
-# --- 3. AI思考エンジン：自動モデル選別機能 ---
-def generate_ai_talk_final():
+# --- 3. AI思考エンジン：Gemini 2.5 Flash 固定版 ---
+def generate_ai_talk_v2_5():
     collected = []
     while not st.session_state.chat_queue.empty():
         collected.append(st.session_state.chat_queue.get())
     
     if collected:
         summary = "\n".join([f"- {m['user']}: {m['text']}" for m in collected])
-        prompt = f"知性的で皮肉屋なAI配信者として、視聴者コメントを拾って毒を吐き、最近の不条理な話題に繋げて150文字程度で喋って。セリフは「」内で。\n{summary}"
+        prompt = f"知性的で皮肉屋なAI配信者として、以下の視聴者コメントを拾って毒を吐きつつ、150文字程度で喋って。セリフは「」内で。\n{summary}"
     else:
-        prompt = "チャットが静かです。皮肉屋なAI配信者として、視聴者の怠慢を煽りつつ、鋭い独り言を150文字程度で言って。「」内のみ。"
+        prompt = "チャットが静かです。皮肉屋なAI配信者として、視聴者を煽りつつ、150文字程度独り言を言って。「」内のみ。"
 
-    # 試行するモデルの優先順位リスト
-    models_to_try = [
-        "gemini-3.1-flash-lite-preview", # 2026年最新本命
-        "gemini-3-flash-preview",      # 準最新
-        "gemini-2.0-flash"             # 鉄板の安定版
-    ]
-
-    for model in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={ST_GEMINI_KEY}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in [
-                "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", 
-                "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"
-            ]]
-        }
-        try:
-            res = requests.post(url, json=payload, timeout=10)
-            res_json = res.json()
-            if 'candidates' in res_json:
-                st.sidebar.write(f"使用中モデル: {model}") # デバッグ用
-                return res_json['candidates'][0]['content']['parts'][0]['text']
-        except:
-            continue
+    # ★ Gemini 2.5 Flash の標準エンドポイント
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={ST_GEMINI_KEY}"
     
-    return "（全モデルでエラーよ。APIキーを見直してちょうだい。）"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
+    }
+
+    try:
+        res = requests.post(url, json=payload, timeout=12)
+        res_json = res.json()
+        if 'candidates' in res_json:
+            return res_json['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"（エラー: {res_json.get('error', {}).get('message', 'AIが沈黙しました')}）"
+    except Exception as e:
+        return f"（通信エラー: {str(e)}）"
 
 # --- 4. UI 表示 ---
-st.title("🤖 AI Streamer Pro：安定稼働モード")
+st.title("🤖 AI Streamer Pro (Gemini 2.5)")
 
 col1, col2 = st.columns(2)
 col1.metric("Twitch同期", st.session_state.conn_status)
 col2.metric("待機中コメント", st.session_state.chat_queue.qsize())
 
+# 自動リフレッシュ JS
 st.components.v1.html(f"""
     <script>
-    setTimeout(function(){{ window.parent.document.querySelector('button[kind="primary"]').click(); }}, {refresh_rate * 1000});
+    setTimeout(function(){{
+        window.parent.document.querySelector('button[kind="primary"]').click();
+    }}, {refresh_rate * 1000});
     </script>
 """, height=0)
 
-if st.button("🎙 トーク生成（自動巡回中）", type="primary"):
-    with st.spinner("AIが最適な脳（モデル）を選別中..."):
-        talk = generate_ai_talk_final()
+if st.button("🎙 トーク生成（巡回中）", type="primary"):
+    with st.spinner("Gemini 2.5 Flashが思考中..."):
+        talk = generate_ai_talk_v2_5()
         if talk:
             st.session_state.chat_history.append(talk)
             clean_text = talk.replace("「", "").replace("」", "").replace("\n", " ")
             st.components.v1.html(f"""
                 <script>
                 var msg = new SpeechSynthesisUtterance("{clean_text}");
-                msg.lang = "ja-JP"; msg.pitch = 0.8; msg.rate = 1.1;
+                msg.lang = "ja-JP";
+                msg.pitch = 0.8;
+                msg.rate = 1.1;
                 window.speechSynthesis.speak(msg);
                 </script>
             """, height=0)
