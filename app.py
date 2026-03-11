@@ -6,9 +6,9 @@ import requests
 from queue import Queue
 
 # --- 1. 基本設定（サイドバー） ---
-st.set_page_config(page_title="AI Streamer 2.5", page_icon="🎙")
+st.set_page_config(page_title="AI Streamer 2.5 Pro", page_icon="🎙")
 st.sidebar.title("🎙 AI Streamer Engine")
-st.sidebar.info("Model: Gemini 2.5 Flash (Stable)")
+st.sidebar.info("Model: Gemini 2.5 Flash (Emotion Optimized)")
 
 ST_GEMINI_KEY = st.sidebar.text_input("1. Gemini API Key", type="password").strip()
 TW_CHANNEL = st.sidebar.text_input("2. Twitch ID", placeholder="your_id").strip().lower()
@@ -52,13 +52,14 @@ def twitch_listener(channel, token, queue):
             st.session_state.conn_status = "🔴 再接続中..."
             time.sleep(5)
 
+# スレッド起動
 if ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN:
     if "thread_started" not in st.session_state:
         t = threading.Thread(target=twitch_listener, args=(TW_CHANNEL, TW_ACCESS_TOKEN, st.session_state.chat_queue), daemon=True)
         t.start()
         st.session_state.thread_started = True
 
-# --- 3. AI思考エンジン：Gemini 2.5 Flash 固定版 ---
+# --- 3. AI思考エンジン：情緒・展開力強化プロンプト ---
 def generate_ai_talk_v2_5():
     collected = []
     while not st.session_state.chat_queue.empty():
@@ -66,21 +67,34 @@ def generate_ai_talk_v2_5():
     
     if collected:
         summary = "\n".join([f"- {m['user']}: {m['text']}" for m in collected])
-        prompt = f"知性的で皮肉屋なAI配信者として、以下の視聴者コメントを拾って毒を吐きつつ、150文字程度で喋って。セリフは「」内で。\n{summary}"
-    else:
-        prompt = "チャットが静かです。皮肉屋なAI配信者として、視聴者を煽りつつ、150文字程度独り言を言って。「」内のみ。"
+        prompt = f"""
+        あなたは知性的で皮肉屋だが、実は人間味のある「ツンデレAI配信者」です。
+        
+        【リスナーのコメント】
+        {summary}
 
-    # ★ Gemini 2.5 Flash の標準エンドポイント
+        【トーク構成の指示】
+        1. リアクション: 「{collected[0]['user']}たちが何か言ってるわね」と軽くあしらう。
+        2. 深掘り: そのコメントから「人間の心理」や「社会の矛盾」を皮肉たっぷりに1つ指摘する。
+        3. 発展: 全く関係ないようで実は繋がっている「哲学的な持論」や「不条理な世間話」へ話題を飛ばす。
+        4. 情緒: 10回に1回程度、不器用に共感を見せる（例:「…まあ、その感性は悪くないけどね」）。
+        5. 150文字程度で、生配信のノリで喋って。セリフは「」内のみ。
+        """
+    else:
+        prompt = """
+        チャットが静かです。あなたは「私の知性に誰もついてこれないのかしら」と呆れている皮肉屋AIです。
+        視聴者の沈黙を煽りつつ、最近ネットの海で見つけた「愚かな流行」や「理解不能なニュース」について、
+        150文字程度で独り言を熱く語って。最後は突き放して。セリフは「」内のみ。
+        """
+
     url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={ST_GEMINI_KEY}"
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
+        "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in [
+            "HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", 
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"
+        ]]
     }
 
     try:
@@ -89,12 +103,12 @@ def generate_ai_talk_v2_5():
         if 'candidates' in res_json:
             return res_json['candidates'][0]['content']['parts'][0]['text']
         else:
-            return f"（エラー: {res_json.get('error', {}).get('message', 'AIが沈黙しました')}）"
+            return f"（エラー: {res_json.get('error', {}).get('message', 'AIが思考を拒否しました')}）"
     except Exception as e:
         return f"（通信エラー: {str(e)}）"
 
 # --- 4. UI 表示 ---
-st.title("🤖 AI Streamer Pro (Gemini 2.5)")
+st.title("🤖 AI Streamer Pro v2.5")
 
 col1, col2 = st.columns(2)
 col1.metric("Twitch同期", st.session_state.conn_status)
@@ -109,8 +123,8 @@ st.components.v1.html(f"""
     </script>
 """, height=0)
 
-if st.button("🎙 トーク生成（巡回中）", type="primary"):
-    with st.spinner("Gemini 2.5 Flashが思考中..."):
+if st.button("🎙 トーク生成（自動巡回）", type="primary"):
+    with st.spinner("思考回路をアップデート中..."):
         talk = generate_ai_talk_v2_5()
         if talk:
             st.session_state.chat_history.append(talk)
@@ -128,3 +142,6 @@ if st.button("🎙 トーク生成（巡回中）", type="primary"):
 st.divider()
 for m in reversed(st.session_state.chat_history):
     st.chat_message("assistant", avatar="🤖").write(m)
+
+if not (ST_GEMINI_KEY and TW_CHANNEL and TW_ACCESS_TOKEN):
+    st.info("サイドバーに情報を入力してください。")
